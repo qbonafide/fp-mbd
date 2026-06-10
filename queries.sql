@@ -14,32 +14,32 @@
 -- 1. Index pada NIK di tabel daftar_hitam
 --    Alasan: Kolom nik (VARCHAR) sering di-JOIN dengan
 --    tabel pelanggan untuk cross-check blacklist.
-CREATE INDEX idx_daftar_hitam_nik
+CREATE INDEX IF NOT EXISTS idx_daftar_hitam_nik
     ON daftar_hitam(nik);
 
 -- 2. Index pada status_sewa di tabel kontrak_sewa
 --    Alasan: Hampir semua query memfilter berdasarkan
 --    status_sewa ('Aktif', 'Terlambat', dll) dari 200k data.
-CREATE INDEX idx_kontrak_sewa_status
+CREATE INDEX IF NOT EXISTS idx_kontrak_sewa_status
     ON kontrak_sewa(status_sewa);
 
 -- 3. Index pada status_kendaraan di tabel kendaraan
 --    Alasan: Query monitoring kendaraan sering memfilter
 --    berdasarkan status operasional kendaraan.
-CREATE INDEX idx_kendaraan_status
+CREATE INDEX IF NOT EXISTS idx_kendaraan_status
     ON kendaraan(status_kendaraan);
 
 -- 4. Composite Index pada (id_kendaraan, waktu_log) di pelacakan_lokasi
 --    Alasan: Subquery GROUP BY + MAX memerlukan akses efisien
 --    ke log pelacakan terbaru per kendaraan dari 500k data.
 --    Index komposit memungkinkan "Using index for group-by".
-CREATE INDEX idx_pelacakan_kendaraan_waktu
+CREATE INDEX IF NOT EXISTS idx_pelacakan_kendaraan_waktu
     ON pelacakan_lokasi(id_kendaraan, waktu_log);
 
 -- 5. Index pada id_sewa di tabel pelanggaran_geofence
 --    Alasan: Mempercepat JOIN antara pelanggaran geofence
 --    dengan kontrak sewa saat membuat laporan agregat.
-CREATE INDEX idx_pelanggaran_geofence_sewa
+CREATE INDEX IF NOT EXISTS idx_pelanggaran_geofence_sewa
     ON pelanggaran_geofence(id_sewa);
 
 
@@ -242,3 +242,4 @@ SELECT * FROM pelanggan LIMIT 1;
 -- kontrak_sewa      | tanggal_kembali_aktual      | 73777 | 200000  | 36.9%
 -- konfigurasi_geo.  | batas_poligon               | 200000| 200000  | 100%
 -- pelanggan         | (tidak ada kolom nullable)  | 0     | 200000  | 0%
+
