@@ -133,7 +133,7 @@ SELECT
 FROM pelanggaran_geofence pg
 JOIN kontrak_sewa ks      ON pg.id_sewa      = ks.id_sewa
 JOIN pelanggan p           ON ks.id_pelanggan = p.id_pelanggan
-JOIN kendaraan k           ON pg.id_kendaraan = k.id_kendaraan
+JOIN kendaraan k           ON ks.id_kendaraan = k.id_kendaraan
 LEFT JOIN konfigurasi_geofence kg ON ks.id_sewa = kg.id_sewa
 WHERE ks.status_sewa IN ('Aktif', 'Terlambat', 'Macet-Hukum')
 GROUP BY
@@ -144,7 +144,6 @@ GROUP BY
 HAVING COUNT(pg.id_pelanggaran) >= 2
 ORDER BY total_pelanggaran DESC
 LIMIT 20;
-
 
 -- ============================================================
 -- QUERY 3: CROSS-CHECK NIK DENGAN DATABASE KOMUNITAS (BLACKLIST)
