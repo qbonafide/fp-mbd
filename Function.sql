@@ -7,6 +7,7 @@ DELIMITER $$
 CREATE FUNCTION fn_hitung_skor_risiko_pelanggan(
     p_id_pelanggan INT
 )
+    
 RETURNS INT
 DETERMINISTIC
 BEGIN
