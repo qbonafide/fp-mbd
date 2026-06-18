@@ -493,7 +493,6 @@ def insert_geofence():
         pusat_latitude,
         pusat_longitude,
         radius_km,
-        batas_poligon,
         status_aktif
     )
     VALUES (%s,%s,%s,%s,%s,%s)
@@ -506,7 +505,6 @@ def insert_geofence():
                 round(random.uniform(-8.8, -5.8), 8),
                 round(random.uniform(106.0, 114.0), 8),
                 random.choice([10,15,20,25,30,50]),
-                None,
                 1
             )
         )
