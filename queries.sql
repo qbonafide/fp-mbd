@@ -4,51 +4,47 @@
 -- Peran: Data Analyst (Agil)
 -- Database: fp_rental_kendaraan (MySQL/MariaDB)
 -- ============================================================
-
 -- ============================================================
--- QUERY 1: DETEKSI KENDARAAN OFF-GPS
--- ============================================================
--- Tujuan : Mendeteksi kendaraan dengan status sewa aktif/
---          terlambat yang kehilangan sinyal GPS (status 'Hilang')
---          atau tidak mengirimkan log pelacakan selama >24 jam.
--- Tabel  : kontrak_sewa, pelanggan, kendaraan, pelacakan_lokasi
--- Teknik : Subquery bertingkat + LEFT JOIN + TIMESTAMPDIFF
+--  FINAL PROJECT MBD A - 3 QUERY KOMPLEKS
+--  Sistem Manajemen Rental Kendaraan Terintegrasi
 -- ============================================================
 
+
+-- ============================================================
+--  QUERY 1: DETEKSI KENDARAAN OFF-GPS
+--  Mendeteksi kendaraan aktif yang sinyal GPS-nya hilang
+--  atau tidak update lebih dari 24 jam.
+-- ============================================================
+
+-- ---- SEBELUM OPTIMASI ----
+-- Menggunakan nested subquery (2 level) untuk ambil log terbaru
 SELECT
-    k.id_kendaraan,
     k.plat_nomor,
     k.merk,
     k.model,
     ks.id_sewa,
     ks.status_sewa,
-    p.nama_depan,
-    p.nama_belakang,
-    p.nik,
+    CONCAT(p.nama_depan, ' ', p.nama_belakang) AS nama_pelanggan,
     p.no_telp,
-    pl.waktu_log         AS terakhir_kirim_sinyal,
+    pl.waktu_log     AS terakhir_kirim_sinyal,
     pl.status_sinyal,
-    pl.latitude,
-    pl.longitude,
     TIMESTAMPDIFF(HOUR, pl.waktu_log, NOW()) AS jam_sejak_sinyal_terakhir
 FROM kontrak_sewa ks
+-- kontrak_sewa: filter kendaraan yang sedang disewa
 JOIN pelanggan p ON ks.id_pelanggan = p.id_pelanggan
+-- pelanggan: nama & nomor telpon penyewa
 JOIN kendaraan k ON ks.id_kendaraan = k.id_kendaraan
+-- kendaraan: identitas unit fisik kendaraan
 LEFT JOIN (
-    -- Subquery: Ambil data log pelacakan TERBARU per kendaraan
-    SELECT pl1.id_kendaraan,
-           pl1.waktu_log,
-           pl1.status_sinyal,
-           pl1.latitude,
-           pl1.longitude
+    -- pelacakan_lokasi: ambil log GPS terbaru per kendaraan
+    SELECT pl1.id_kendaraan, pl1.waktu_log, pl1.status_sinyal
     FROM pelacakan_lokasi pl1
     INNER JOIN (
-        -- Subquery dalam: Cari waktu log maksimal per kendaraan
         SELECT id_kendaraan, MAX(waktu_log) AS max_waktu
         FROM pelacakan_lokasi
         GROUP BY id_kendaraan
     ) pl2 ON pl1.id_kendaraan = pl2.id_kendaraan
-         AND pl1.waktu_log = pl2.max_waktu
+         AND pl1.waktu_log    = pl2.max_waktu
 ) pl ON k.id_kendaraan = pl.id_kendaraan
 WHERE ks.status_sewa IN ('Aktif', 'Terlambat')
   AND (
@@ -58,234 +54,248 @@ WHERE ks.status_sewa IN ('Aktif', 'Terlambat')
   )
 LIMIT 20;
 
--- ============================================
--- OPTIMASI QUERY 1: Deteksi Kendaraan Off-GPS
--- ============================================
 
--- 1. Buat index untuk optimasi
-CREATE INDEX idx_pelacakan_kendaraan_waktu 
-ON pelacakan_lokasi(id_kendaraan, waktu_log DESC);
+-- ---- SESUDAH OPTIMASI ----
 
-CREATE INDEX idx_kontrak_sewa_status_kendaraan 
-ON kontrak_sewa(status_sewa, id_kendaraan);
+-- [INDEX] Filter status sewa + join ke kendaraan
+CREATE INDEX idx_kontrak_status
+    ON kontrak_sewa(status_sewa, id_kendaraan);
 
-CREATE INDEX idx_pelacakan_status_sinyal 
-ON pelacakan_lokasi(status_sinyal);
+-- [INDEX] Ambil log terbaru per kendaraan secara efisien
+CREATE INDEX idx_lokasi_kendaraan_waktu
+    ON pelacakan_lokasi(id_kendaraan, waktu_log DESC);
 
--- 2. Query yang dioptimasi dengan CTE dan Window Function
-WITH latest_location AS (
-    SELECT 
-        id_kendaraan,
-        latitude,
-        longitude,
-        waktu_log,
-        status_sinyal,
-        ROW_NUMBER() OVER (PARTITION BY id_kendaraan ORDER BY waktu_log DESC) AS rn
+-- [INDEX] Filter baris dengan sinyal hilang
+CREATE INDEX idx_lokasi_sinyal
+    ON pelacakan_lokasi(status_sinyal);
+
+-- CTE menggantikan nested subquery agar lebih efisien
+WITH log_terbaru AS (
+    -- pelacakan_lokasi: ambil 1 log GPS terbaru per kendaraan
+    SELECT id_kendaraan, waktu_log, status_sinyal,
+           ROW_NUMBER() OVER (PARTITION BY id_kendaraan ORDER BY waktu_log DESC) AS rn
     FROM pelacakan_lokasi
-    WHERE status_sinyal = 'Hilang' 
-       OR waktu_log < DATE_SUB(NOW(), INTERVAL 24 HOUR)
 ),
-active_rentals AS (
-    SELECT 
-        ks.id_sewa,
-        ks.id_kendaraan,
-        ks.status_sewa,
-        ks.tanggal_ambil,
-        ks.tanggal_kembali_rencana,
-        p.nik,
-        p.nama_depan,
-        p.nama_belakang,
-        p.no_telp
+sewa_aktif AS (
+    -- kontrak_sewa + pelanggan: hanya sewa yang masih berjalan
+    SELECT ks.id_sewa, ks.id_kendaraan, ks.status_sewa,
+           CONCAT(p.nama_depan, ' ', p.nama_belakang) AS nama_pelanggan,
+           p.no_telp
     FROM kontrak_sewa ks
     JOIN pelanggan p ON ks.id_pelanggan = p.id_pelanggan
     WHERE ks.status_sewa IN ('Aktif', 'Terlambat')
 )
-SELECT 
-    k.id_kendaraan,
+SELECT
     k.plat_nomor,
     k.merk,
-    k.model,
-    ar.id_sewa,
-    ar.status_sewa,
-    ar.tanggal_ambil,
-    ar.tanggal_kembali_rencana,
-    ar.nik,
-    CONCAT(ar.nama_depan, ' ', ar.nama_belakang) AS nama_pelanggan,
-    ar.no_telp,
-    pl.latitude,
-    pl.longitude,
-    pl.waktu_log AS last_location_time,
-    pl.status_sinyal,
-    TIMESTAMPDIFF(HOUR, pl.waktu_log, NOW()) AS jam_tidak_terdeteksi
+    sa.status_sewa,
+    sa.nama_pelanggan,
+    sa.no_telp,
+    lt.waktu_log  AS terakhir_kirim_sinyal,
+    lt.status_sinyal,
+    TIMESTAMPDIFF(HOUR, lt.waktu_log, NOW()) AS jam_tidak_terdeteksi
+-- kendaraan: identitas unit fisik kendaraan
 FROM kendaraan k
-INNER JOIN active_rentals ar ON k.id_kendaraan = ar.id_kendaraan
-LEFT JOIN latest_location pl ON k.id_kendaraan = pl.id_kendaraan AND pl.rn = 1
-WHERE pl.status_sinyal = 'Hilang' 
-   OR pl.waktu_log IS NULL 
-   OR TIMESTAMPDIFF(HOUR, pl.waktu_log, NOW()) > 24
+JOIN sewa_aktif sa   ON k.id_kendaraan = sa.id_kendaraan
+LEFT JOIN log_terbaru lt ON k.id_kendaraan = lt.id_kendaraan AND lt.rn = 1
+WHERE lt.status_sinyal = 'Hilang'
+   OR lt.waktu_log IS NULL
+   OR TIMESTAMPDIFF(HOUR, lt.waktu_log, NOW()) > 24
 ORDER BY jam_tidak_terdeteksi DESC
 LIMIT 20;
 
 
 -- ============================================================
--- QUERY 2: LAPORAN PELANGGARAN GEOFENCE
--- ============================================================
--- Tujuan : Menyajikan rekapitulasi pelanggan dengan sewa aktif
---          yang memiliki >=2 pelanggaran batas geofence.
--- Tabel  : pelanggaran_geofence, kontrak_sewa, pelanggan,
---          kendaraan, konfigurasi_geofence
--- Teknik : Multi-JOIN + GROUP BY + HAVING + GROUP_CONCAT
---          + Fungsi Agregat (COUNT, MAX)
+--  TRIGGER & EVENT PENDUKUNG QUERY 1
 -- ============================================================
 
+-- [TRIGGER] Otomatis catat ke log_anomali saat sinyal
+-- masuk dengan status 'Hilang'
+DROP TRIGGER IF EXISTS trg_after_lokasi_insert;
+DELIMITER //
+CREATE TRIGGER trg_after_lokasi_insert
+AFTER INSERT ON pelacakan_lokasi
+FOR EACH ROW
+BEGIN
+    IF NEW.status_sinyal = 'Hilang' THEN
+        -- log_anomali: catat kejadian GPS hilang untuk kontrak aktif
+        INSERT INTO log_anomali
+            (id_sewa, jenis_anomali, waktu_kejadian, deskripsi, skor_risiko, status_tindak_lanjut)
+        SELECT
+            ks.id_sewa,
+            'GPS Hilang',
+            NOW(),
+            CONCAT('Sinyal GPS kendaraan ', k.plat_nomor, ' hilang pada ', NEW.waktu_log),
+            70,
+            'Perlu Ditinjau'
+        FROM kontrak_sewa ks
+        JOIN kendaraan k ON ks.id_kendaraan = k.id_kendaraan
+        WHERE ks.id_kendaraan = NEW.id_kendaraan
+          AND ks.status_sewa IN ('Aktif', 'Terlambat')
+        LIMIT 1;
+    END IF;
+END //
+DELIMITER ;
+
+-- [EVENT] Aktifkan scheduler (jalankan sekali di server)
+SET GLOBAL event_scheduler = ON;
+
+-- [EVENT] Tiap 5 menit: tandai sinyal 'Hilang' jika tidak ada
+-- kiriman log baru dari kendaraan aktif selama > 5 menit
+DROP EVENT IF EXISTS evt_ping_lokasi;
+DELIMITER //
+CREATE EVENT evt_ping_lokasi
+ON SCHEDULE EVERY 5 MINUTE
+STARTS CURRENT_TIMESTAMP
+DO
+BEGIN
+    UPDATE pelacakan_lokasi pl
+    JOIN (
+        SELECT id_kendaraan, MAX(waktu_log) AS last_log
+        FROM pelacakan_lokasi
+        GROUP BY id_kendaraan
+    ) latest ON pl.id_kendaraan = latest.id_kendaraan
+             AND pl.waktu_log   = latest.last_log
+    SET pl.status_sinyal = 'Hilang'
+    WHERE TIMESTAMPDIFF(MINUTE, latest.last_log, NOW()) > 5
+      AND pl.status_sinyal != 'Hilang'
+      AND pl.id_kendaraan IN (
+          SELECT id_kendaraan FROM kontrak_sewa
+          WHERE status_sewa IN ('Aktif', 'Terlambat')
+      );
+END //
+DELIMITER ;
+
+-- [EVENT] Tiap 1 hari: hapus data lokasi yang sudah > 7 hari
+-- agar tabel pelacakan_lokasi tidak membengkak
+DROP EVENT IF EXISTS evt_hapus_lokasi_lama;
+DELIMITER //
+CREATE EVENT evt_hapus_lokasi_lama
+ON SCHEDULE EVERY 1 DAY
+STARTS CURRENT_TIMESTAMP
+DO
+BEGIN
+    DELETE FROM pelacakan_lokasi
+    WHERE waktu_log < DATE_SUB(NOW(), INTERVAL 7 DAY);
+END //
+DELIMITER ;
+
+
+-- ============================================================
+--  QUERY 2: LAPORAN PELANGGARAN GEOFENCE
+--  Rekap pelanggan dengan >= 2 pelanggaran batas wilayah
+--  pada sewa yang masih aktif atau bermasalah.
+-- ============================================================
+
+-- ---- SEBELUM OPTIMASI ----
+-- GROUP BY langsung di atas tabel besar, tanpa pre-agregasi
 SELECT
     p.nik,
     CONCAT(p.nama_depan, ' ', p.nama_belakang) AS nama_pelanggan,
     p.no_telp,
     k.plat_nomor,
-    k.merk,
-    k.model,
     ks.id_sewa,
     ks.status_sewa,
-    ks.tanggal_ambil,
-    kg.radius_km                              AS batas_geofence_km,
-    COUNT(pg.id_pelanggaran)                  AS total_pelanggaran,
-    MAX(pg.jarak_pelanggaran_km)              AS jarak_terjauh_km,
-    MAX(pg.waktu_pelanggaran)                 AS pelanggaran_terakhir,
-    GROUP_CONCAT(
-        DISTINCT pg.status_penanganan
-        ORDER BY pg.status_penanganan
-    ) AS status_penanganan_list
+    -- konfigurasi_geofence: radius batas wilayah yang disepakati
+    kg.radius_km AS batas_geofence_km,
+    COUNT(pg.id_pelanggaran)  AS total_pelanggaran,
+    MAX(pg.jarak_pelanggaran_km) AS jarak_terjauh_km,
+    GROUP_CONCAT(DISTINCT pg.status_penanganan ORDER BY pg.status_penanganan) AS status_penanganan_list
+-- pelanggaran_geofence: data log setiap pelanggaran batas wilayah
 FROM pelanggaran_geofence pg
-JOIN kontrak_sewa ks      ON pg.id_sewa      = ks.id_sewa
-JOIN pelanggan p           ON ks.id_pelanggan = p.id_pelanggan
-JOIN kendaraan k           ON ks.id_kendaraan = k.id_kendaraan
+-- kontrak_sewa: filter sewa yang masih aktif/bermasalah
+JOIN kontrak_sewa ks ON pg.id_sewa = ks.id_sewa
+-- pelanggan: identitas pelanggan pelanggar
+JOIN pelanggan p     ON ks.id_pelanggan = p.id_pelanggan
+-- kendaraan: kendaraan yang dipakai
+JOIN kendaraan k     ON ks.id_kendaraan = k.id_kendaraan
 LEFT JOIN konfigurasi_geofence kg ON ks.id_sewa = kg.id_sewa
 WHERE ks.status_sewa IN ('Aktif', 'Terlambat', 'Macet-Hukum')
-GROUP BY
-    p.nik, nama_pelanggan, p.no_telp,
-    k.plat_nomor, k.merk, k.model,
-    ks.id_sewa, ks.status_sewa, ks.tanggal_ambil,
-    kg.radius_km
+GROUP BY p.nik, nama_pelanggan, p.no_telp, k.plat_nomor,
+         ks.id_sewa, ks.status_sewa, kg.radius_km
 HAVING COUNT(pg.id_pelanggaran) >= 2
 ORDER BY total_pelanggaran DESC
 LIMIT 20;
 
--- ============================================
--- OPTIMASI QUERY 2: Laporan Pelanggaran Geofence
--- ============================================
 
--- 1. Buat index untuk optimasi
-CREATE INDEX idx_pelanggaran_sewa_waktu 
-ON pelanggaran_geofence(id_sewa, waktu_pelanggaran DESC);
+-- ---- SESUDAH OPTIMASI ----
 
-CREATE INDEX idx_kontrak_sewa_status 
-ON kontrak_sewa(status_sewa);
+-- [INDEX] JOIN utama pelanggaran -> kontrak sewa
+CREATE INDEX idx_pelanggaran_sewa
+    ON pelanggaran_geofence(id_sewa);
 
-CREATE INDEX idx_pelanggaran_jarak 
-ON pelanggaran_geofence(jarak_pelanggaran_km);
+-- [INDEX] Filter status sewa
+CREATE INDEX idx_kontrak_status_q2
+    ON kontrak_sewa(status_sewa);
 
--- 2. Buat materialized view untuk ringkasan pelanggaran
-CREATE TABLE ringkasan_pelanggaran_geofence_all (
-    id_sewa INT PRIMARY KEY,
-    total_pelanggaran INT DEFAULT 0,
-    jarak_terjauh_km DECIMAL(10,2) DEFAULT 0,
-    pelanggaran_terakhir DATETIME,
+-- [INDEX] Sorting & agregasi jarak
+CREATE INDEX idx_pelanggaran_jarak
+    ON pelanggaran_geofence(jarak_pelanggaran_km);
+
+-- Tabel ringkasan pre-agregasi (materialized view manual)
+-- pelanggaran_geofence diringkas per id_sewa agar query utama
+-- tidak GROUP BY di atas tabel besar setiap kali dijalankan
+CREATE TABLE IF NOT EXISTS ringkasan_pelanggaran (
+    id_sewa                INT PRIMARY KEY,
+    total_pelanggaran      INT DEFAULT 0,
+    jarak_terjauh_km       DECIMAL(10,2),
+    pelanggaran_terakhir   DATETIME,
     status_penanganan_list TEXT,
-    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_total_pelanggaran (total_pelanggaran DESC),
-    INDEX idx_pelanggaran_terakhir (pelanggaran_terakhir DESC)
+    INDEX idx_total (total_pelanggaran DESC)
 );
 
--- 3. Stored Procedure untuk update ringkasan (dijalankan periodik)
-DELIMITER //
-CREATE PROCEDURE update_ringkasan_pelanggaran_all()
-BEGIN
-    REPLACE INTO ringkasan_pelanggaran_geofence_all 
-        (id_sewa, total_pelanggaran, jarak_terjauh_km, pelanggaran_terakhir, status_penanganan_list)
-    SELECT 
-        id_sewa,
-        COUNT(id_pelanggaran) AS total_pelanggaran,
-        MAX(jarak_pelanggaran_km) AS jarak_terjauh_km,
-        MAX(waktu_pelanggaran) AS pelanggaran_terakhir,
-        GROUP_CONCAT(DISTINCT status_penanganan ORDER BY status_penanganan) AS status_penanganan_list
-    FROM pelanggaran_geofence
-    GROUP BY id_sewa
-    HAVING COUNT(id_pelanggaran) >= 2;
-END //
-DELIMITER ;
+-- Isi ringkasan: jalankan sekali untuk inisialisasi,
+-- selanjutnya diperbarui otomatis via trigger insert pelanggaran
+REPLACE INTO ringkasan_pelanggaran
+SELECT
+    id_sewa,
+    COUNT(id_pelanggaran),
+    MAX(jarak_pelanggaran_km),
+    MAX(waktu_pelanggaran),
+    GROUP_CONCAT(DISTINCT status_penanganan ORDER BY status_penanganan)
+FROM pelanggaran_geofence
+GROUP BY id_sewa
+HAVING COUNT(id_pelanggaran) >= 2;
 
--- 4. Trigger untuk update otomatis
-DELIMITER //
-CREATE TRIGGER after_insert_pelanggaran
-AFTER INSERT ON pelanggaran_geofence
-FOR EACH ROW
-BEGIN
-    INSERT INTO ringkasan_pelanggaran_geofence_all 
-        (id_sewa, total_pelanggaran, jarak_terjauh_km, pelanggaran_terakhir, status_penanganan_list)
-    SELECT 
-        id_sewa,
-        COUNT(id_pelanggaran) AS total_pelanggaran,
-        MAX(jarak_pelanggaran_km) AS jarak_terjauh_km,
-        MAX(waktu_pelanggaran) AS pelanggaran_terakhir,
-        GROUP_CONCAT(DISTINCT status_penanganan ORDER BY status_penanganan) AS status_penanganan_list
-    FROM pelanggaran_geofence
-    WHERE id_sewa = NEW.id_sewa
-    GROUP BY id_sewa
-    ON DUPLICATE KEY UPDATE
-        total_pelanggaran = VALUES(total_pelanggaran),
-        jarak_terjauh_km = VALUES(jarak_terjauh_km),
-        pelanggaran_terakhir = VALUES(pelanggaran_terakhir),
-        status_penanganan_list = VALUES(status_penanganan_list);
-END //
-DELIMITER ;
-
--- 5. Jalankan sekali untuk inisialisasi
-CALL update_ringkasan_pelanggaran_all();
-
--- 6. Query yang dioptimasi menggunakan ringkasan (HASIL SAMA DENGAN ORIGINAL)
-SELECT 
+-- Query utama: JOIN ke ringkasan, bukan scan tabel besar
+SELECT
     p.nik,
     CONCAT(p.nama_depan, ' ', p.nama_belakang) AS nama_pelanggan,
-    p.no_telp,
     k.plat_nomor,
-    k.merk,
-    k.model,
-    ks.id_sewa,
     ks.status_sewa,
-    ks.tanggal_ambil,
-    kg.radius_km AS batas_geofence_km,
-    rpg.total_pelanggaran,
-    rpg.jarak_terjauh_km,
-    rpg.pelanggaran_terakhir,
-    rpg.status_penanganan_list,
-    CASE 
-        WHEN rpg.total_pelanggaran >= 5 THEN 'KRITIS'
-        WHEN rpg.total_pelanggaran >= 3 THEN 'TINGGI'
-        WHEN rpg.total_pelanggaran >= 2 THEN 'SEDANG'
-        ELSE 'RENDAH'
+    -- konfigurasi_geofence: radius batas wilayah yang disepakati
+    kg.radius_km AS batas_km,
+    rp.total_pelanggaran,
+    rp.jarak_terjauh_km,
+    rp.status_penanganan_list,
+    CASE
+        WHEN rp.total_pelanggaran >= 5 THEN 'KRITIS'
+        WHEN rp.total_pelanggaran >= 3 THEN 'TINGGI'
+        ELSE 'SEDANG'
     END AS tingkat_risiko
-FROM ringkasan_pelanggaran_geofence_all rpg
-JOIN kontrak_sewa ks ON rpg.id_sewa = ks.id_sewa
-JOIN pelanggan p ON ks.id_pelanggan = p.id_pelanggan
-JOIN kendaraan k ON ks.id_kendaraan = k.id_kendaraan
+-- ringkasan_pelanggaran: sumber data pra-agregasi
+FROM ringkasan_pelanggaran rp
+-- kontrak_sewa: filter sewa yang masih aktif/bermasalah
+JOIN kontrak_sewa ks ON rp.id_sewa = ks.id_sewa
+-- pelanggan: identitas penyewa
+JOIN pelanggan p     ON ks.id_pelanggan = p.id_pelanggan
+-- kendaraan: unit kendaraan yang dipakai
+JOIN kendaraan k     ON ks.id_kendaraan = k.id_kendaraan
 LEFT JOIN konfigurasi_geofence kg ON ks.id_sewa = kg.id_sewa
 WHERE ks.status_sewa IN ('Aktif', 'Terlambat', 'Macet-Hukum')
-ORDER BY rpg.total_pelanggaran DESC, rpg.pelanggaran_terakhir DESC
+ORDER BY rp.total_pelanggaran DESC
 LIMIT 20;
 
+
 -- ============================================================
--- QUERY 3: CROSS-CHECK NIK DENGAN DATABASE KOMUNITAS (BLACKLIST)
--- ============================================================
--- Tujuan : Mencocokkan NIK pelanggan sewa aktif/terlambat/dipesan
---          dengan database daftar hitam komunitas persewaan untuk
---          mendeteksi potensi fraud atau risiko tinggi.
--- Tabel  : pelanggan, kontrak_sewa, kendaraan, daftar_hitam,
---          komunitas_rental
--- Teknik : Multi-JOIN (5 tabel) + Filter pada kolom ENUM
---          + ORDER BY pada kolom DATE
+--  QUERY 3: CROSS-CHECK NIK DENGAN BLACKLIST KOMUNITAS
+--  Mendeteksi pelanggan aktif yang NIK-nya cocok dengan
+--  daftar hitam terverifikasi dari komunitas rental.
 -- ============================================================
 
+-- ---- SEBELUM OPTIMASI ----
+-- JOIN langsung ke daftar_hitam tanpa filter awal,
+-- memproses seluruh 10.000 baris blacklist
 SELECT
     p.nik,
     CONCAT(p.nama_depan, ' ', p.nama_belakang) AS nama_pelanggan,
@@ -294,48 +304,52 @@ SELECT
     ks.status_sewa,
     k.plat_nomor,
     k.status_kendaraan,
-    dh.nama_lengkap     AS nama_di_blacklist,
+    -- daftar_hitam: detail pelanggaran yang dilaporkan
+    dh.nama_lengkap    AS nama_di_blacklist,
     dh.jenis_pelanggaran,
     dh.tanggal_kejadian,
     dh.status_verifikasi,
-    kr.nama_rental      AS rental_pelapor,
-    kr.kota             AS kota_rental_pelapor
+    -- komunitas_rental: rental mana yang melaporkan NIK ini
+    kr.nama_rental     AS rental_pelapor,
+    kr.kota            AS kota_rental_pelapor
+-- pelanggan: sumber NIK penyewa yang sedang aktif
 FROM pelanggan p
-JOIN kontrak_sewa ks    ON p.id_pelanggan = ks.id_pelanggan
-JOIN kendaraan k        ON ks.id_kendaraan = k.id_kendaraan
-JOIN daftar_hitam dh    ON p.nik = dh.nik
+-- kontrak_sewa: filter sewa yang masih berjalan
+JOIN kontrak_sewa ks  ON p.id_pelanggan = ks.id_pelanggan
+-- kendaraan: kendaraan yang sedang dipakai
+JOIN kendaraan k      ON ks.id_kendaraan = k.id_kendaraan
+JOIN daftar_hitam dh  ON p.nik = dh.nik
 JOIN komunitas_rental kr ON dh.id_rental_pelapor = kr.id_rental
 WHERE ks.status_sewa IN ('Aktif', 'Terlambat', 'Dipesan')
   AND dh.status_verifikasi = 'Terverifikasi'
 ORDER BY dh.tanggal_kejadian DESC
 LIMIT 20;
 
--- ============================================
--- OPTIMASI QUERY 3: Cross-check NIK Blacklist
--- ============================================
 
--- 1. Buat index untuk optimasi
-CREATE INDEX idx_daftar_hitam_nik_status 
-ON daftar_hitam(nik, status_verifikasi);
+-- ---- SESUDAH OPTIMASI ----
 
-CREATE INDEX idx_daftar_hitam_tanggal 
-ON daftar_hitam(tanggal_kejadian DESC);
+-- [INDEX] JOIN VARCHAR NIK: pelanggan <-> daftar_hitam
+CREATE INDEX idx_pelanggan_nik
+    ON pelanggan(nik);
 
-CREATE INDEX idx_kontrak_sewa_status_pelanggan 
-ON kontrak_sewa(status_sewa, id_pelanggan);
+-- [INDEX] Filter + JOIN pada tabel blacklist
+CREATE INDEX idx_blacklist_nik
+    ON daftar_hitam(nik, status_verifikasi);
 
-CREATE INDEX idx_pelanggan_nik 
-ON pelanggan(nik);
+-- [INDEX] Sorting berdasarkan tanggal kejadian
+CREATE INDEX idx_blacklist_tgl
+    ON daftar_hitam(tanggal_kejadian DESC);
 
--- 2. Query optimasi dengan hasil SAMA PERSIS dengan Original
-WITH verified_blacklist AS (
-    SELECT 
-        nik,
-        nama_lengkap,
-        jenis_pelanggaran,
-        tanggal_kejadian,
-        status_verifikasi,
-        id_rental_pelapor
+-- [INDEX] Filter status sewa + join ke pelanggan
+CREATE INDEX idx_kontrak_status_p
+    ON kontrak_sewa(status_sewa, id_pelanggan);
+
+-- CTE: filter blacklist terverifikasi lebih awal
+-- agar JOIN tidak memproses seluruh 10.000 baris daftar_hitam
+WITH blacklist_aktif AS (
+    -- daftar_hitam: hanya ambil yang sudah terverifikasi
+    SELECT nik, nama_lengkap, jenis_pelanggaran,
+           tanggal_kejadian, id_rental_pelapor
     FROM daftar_hitam
     WHERE status_verifikasi = 'Terverifikasi'
 )
@@ -343,83 +357,22 @@ SELECT
     p.nik,
     CONCAT(p.nama_depan, ' ', p.nama_belakang) AS nama_pelanggan,
     p.status_akun,
-    ks.id_sewa,
-    ks.status_sewa,
     k.plat_nomor,
-    k.status_kendaraan,
-    dh.nama_lengkap AS nama_di_blacklist,
-    dh.jenis_pelanggaran,
-    dh.tanggal_kejadian,
-    dh.status_verifikasi,
+    ks.status_sewa,
+    bl.jenis_pelanggaran,
+    bl.tanggal_kejadian,
+    -- komunitas_rental: rental mana yang melaporkan NIK ini
     kr.nama_rental AS rental_pelapor,
-    kr.kota AS kota_rental_pelapor
+    kr.kota        AS kota_pelapor
+-- pelanggan: sumber NIK penyewa yang sedang aktif
 FROM pelanggan p
-JOIN kontrak_sewa ks ON p.id_pelanggan = ks.id_pelanggan
-JOIN kendaraan k ON ks.id_kendaraan = k.id_kendaraan
-JOIN verified_blacklist dh ON p.nik = dh.nik
-JOIN komunitas_rental kr ON dh.id_rental_pelapor = kr.id_rental
+-- kontrak_sewa: filter hanya sewa yang sedang berjalan
+JOIN kontrak_sewa ks   ON p.id_pelanggan = ks.id_pelanggan
+-- kendaraan: kendaraan yang sedang dipakai penyewa
+JOIN kendaraan k       ON ks.id_kendaraan = k.id_kendaraan
+-- JOIN ke CTE yang sudah terfilter (lebih ringan)
+JOIN blacklist_aktif bl ON p.nik = bl.nik
+JOIN komunitas_rental kr ON bl.id_rental_pelapor = kr.id_rental
 WHERE ks.status_sewa IN ('Aktif', 'Terlambat', 'Dipesan')
-ORDER BY dh.tanggal_kejadian DESC
+ORDER BY bl.tanggal_kejadian DESC
 LIMIT 20;
-
-
--- ============================================================
--- BAGIAN C: SKENARIO DATA INPUT
--- ============================================================
--- Membuktikan bahwa data berhasil di-insert dengan menampilkan:
---   1. Satu Record Lengkap (semua kolom terisi)
---   2. Record dengan Kolom NULL
--- ============================================================
-
-
--- ############################################################
--- SKENARIO 1: Tabel kontrak_sewa
--- ############################################################
-
--- Record Lengkap (Kontrak Selesai - semua kolom terisi)
-SELECT * FROM kontrak_sewa
-WHERE tanggal_kembali_aktual IS NOT NULL
-  AND total_harga IS NOT NULL
-  AND status_sewa = 'Selesai'
-LIMIT 1;
-
--- Record dengan Kolom NULL (Kontrak Aktif - belum dikembalikan)
-SELECT * FROM kontrak_sewa
-WHERE tanggal_kembali_aktual IS NULL
-  AND status_sewa = 'Aktif'
-LIMIT 1;
--- → tanggal_kembali_aktual = NULL karena kendaraan belum dikembalikan
--- → Dari 200.000 kontrak, 73.777 (36.9%) memiliki NULL di kolom ini
-
-
--- ############################################################
--- SKENARIO 2: Tabel konfigurasi_geofence
--- ############################################################
-
--- Record Lengkap (radius dan status aktif terisi)
-SELECT * FROM konfigurasi_geofence LIMIT 1;
--- → batas_poligon = NULL pada seluruh 200.000 record
--- → Sistem menggunakan metode radius lingkaran, bukan poligon
--- → Kolom batas_poligon disediakan untuk pengembangan masa depan
-
-
--- ############################################################
--- SKENARIO 3: Tabel pelanggan
--- ############################################################
-
--- Record Lengkap (semua kolom NOT NULL - tidak ada kolom nullable)
-SELECT * FROM pelanggan LIMIT 1;
--- → Tabel pelanggan tidak memiliki kolom nullable
--- → Semua kolom wajib diisi sesuai business rule
-
-
-
--- ############################################################
--- RINGKASAN SKENARIO DATA
--- ############################################################
--- Tabel             | Kolom Nullable              | NULL  | Total   | %
--- ------------------+-----------------------------+-------+---------+------
--- kontrak_sewa      | tanggal_kembali_aktual      | 73777 | 200000  | 36.9%
--- konfigurasi_geo.  | batas_poligon               | 200000| 200000  | 100%
--- pelanggan         | (tidak ada kolom nullable)  | 0     | 200000  | 0%
-
