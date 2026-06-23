@@ -69,7 +69,7 @@ CREATE TABLE Kontrak_Sewa (
     tanggal_kembali_rencana DATETIME NOT NULL,
     tanggal_kembali_aktual DATETIME NULL,
     total_harga DECIMAL(12,2) NULL,
-    status_sewa ENUM('Dipesan', 'Aktif', 'Selesai', 'Dibatalkan', 'Terlambat', 'Macet-Hukum') DEFAULT 'Dipesan',
+    status_sewa ENUM('Dipesan', 'Aktif', 'Selesai', 'Dibatalkan', 'Terlambat', 'Proses Hukum') DEFAULT 'Dipesan',
     FOREIGN KEY (id_pelanggan) REFERENCES Pelanggan(id_pelanggan) ON DELETE RESTRICT,
     FOREIGN KEY (id_kendaraan) REFERENCES Kendaraan(id_kendaraan) ON DELETE RESTRICT
 );
@@ -134,7 +134,6 @@ CREATE TABLE Konfigurasi_Geofence (
     pusat_latitude DECIMAL(10, 8) NOT NULL,
     pusat_longitude DECIMAL(11, 8) NOT NULL,
     radius_km DECIMAL(5, 2) NOT NULL,
-    batas_poligon TEXT,
     status_aktif TINYINT(1) DEFAULT 1,
     FOREIGN KEY (id_sewa) REFERENCES Kontrak_Sewa(id_sewa) ON DELETE CASCADE
 );
