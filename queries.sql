@@ -46,9 +46,9 @@ LEFT JOIN (
     ) pl2 ON pl1.id_kendaraan = pl2.id_kendaraan
          AND pl1.waktu_log    = pl2.max_waktu
 ) pl ON k.id_kendaraan = pl.id_kendaraan
-WHERE ks.status_sewa IN ('Aktif', 'Terlambat')
+WHERE ks.status_sewa IN ('aktif', 'terlambat')
   AND (
-      pl.status_sinyal = 'Hilang'
+      pl.status_sinyal = 'hilang'
       OR pl.waktu_log IS NULL
       OR TIMESTAMPDIFF(HOUR, pl.waktu_log, NOW()) > 24
   )
@@ -83,7 +83,7 @@ sewa_aktif AS (
            p.no_telp
     FROM kontrak_sewa ks
     JOIN pelanggan p ON ks.id_pelanggan = p.id_pelanggan
-    WHERE ks.status_sewa IN ('Aktif', 'Terlambat')
+    WHERE ks.status_sewa IN ('aktif', 'terlambat')
 )
 SELECT
     k.plat_nomor,
@@ -98,7 +98,7 @@ SELECT
 FROM kendaraan k
 JOIN sewa_aktif sa   ON k.id_kendaraan = sa.id_kendaraan
 LEFT JOIN log_terbaru lt ON k.id_kendaraan = lt.id_kendaraan AND lt.rn = 1
-WHERE lt.status_sinyal = 'Hilang'
+WHERE lt.status_sinyal = 'hilang'
    OR lt.waktu_log IS NULL
    OR TIMESTAMPDIFF(HOUR, lt.waktu_log, NOW()) > 24
 ORDER BY jam_tidak_terdeteksi DESC
@@ -110,17 +110,18 @@ LIMIT 20;
 -- ============================================================
 
 -- [TRIGGER] Otomatis catat ke log_anomali saat sinyal
--- masuk dengan status 'Hilang'
+-- masuk dengan status 'hilang'
 DROP TRIGGER IF EXISTS trg_after_lokasi_insert;
 DELIMITER //
 CREATE TRIGGER trg_after_lokasi_insert
 AFTER INSERT ON pelacakan_lokasi
 FOR EACH ROW
 BEGIN
-    IF NEW.status_sinyal = 'Hilang' THEN
+    IF NEW.status_sinyal = 'hilang' THEN
         -- log_anomali: catat kejadian GPS hilang untuk kontrak aktif
+        -- kolom waktu_log sesuai PDM (bukan waktu_kejadian)
         INSERT INTO log_anomali
-            (id_sewa, jenis_anomali, waktu_kejadian, deskripsi, skor_risiko, status_tindak_lanjut)
+            (id_sewa, jenis_anomali, waktu_log, deskripsi, skor_risiko, status_tindak_lanjut)
         SELECT
             ks.id_sewa,
             'GPS Hilang',
@@ -131,7 +132,7 @@ BEGIN
         FROM kontrak_sewa ks
         JOIN kendaraan k ON ks.id_kendaraan = k.id_kendaraan
         WHERE ks.id_kendaraan = NEW.id_kendaraan
-          AND ks.status_sewa IN ('Aktif', 'Terlambat')
+          AND ks.status_sewa IN ('aktif', 'terlambat')
         LIMIT 1;
     END IF;
 END //
@@ -140,7 +141,7 @@ DELIMITER ;
 -- [EVENT] Aktifkan scheduler (jalankan sekali di server)
 SET GLOBAL event_scheduler = ON;
 
--- [EVENT] Tiap 5 menit: tandai sinyal 'Hilang' jika tidak ada
+-- [EVENT] Tiap 5 menit: tandai sinyal 'hilang' jika tidak ada
 -- kiriman log baru dari kendaraan aktif selama > 5 menit
 DROP EVENT IF EXISTS evt_ping_lokasi;
 DELIMITER //
@@ -156,12 +157,12 @@ BEGIN
         GROUP BY id_kendaraan
     ) latest ON pl.id_kendaraan = latest.id_kendaraan
              AND pl.waktu_log   = latest.last_log
-    SET pl.status_sinyal = 'Hilang'
+    SET pl.status_sinyal = 'hilang'
     WHERE TIMESTAMPDIFF(MINUTE, latest.last_log, NOW()) > 5
-      AND pl.status_sinyal != 'Hilang'
+      AND pl.status_sinyal != 'hilang'
       AND pl.id_kendaraan IN (
           SELECT id_kendaraan FROM kontrak_sewa
-          WHERE status_sewa IN ('Aktif', 'Terlambat')
+          WHERE status_sewa IN ('aktif', 'terlambat')
       );
 END //
 DELIMITER ;
@@ -198,7 +199,7 @@ SELECT
     ks.status_sewa,
     -- konfigurasi_geofence: radius batas wilayah yang disepakati
     kg.radius_km AS batas_geofence_km,
-    COUNT(pg.id_pelanggaran)  AS total_pelanggaran,
+    COUNT(pg.id_pelanggaran)     AS total_pelanggaran,
     MAX(pg.jarak_pelanggaran_km) AS jarak_terjauh_km,
     GROUP_CONCAT(DISTINCT pg.status_penanganan ORDER BY pg.status_penanganan) AS status_penanganan_list
 -- pelanggaran_geofence: data log setiap pelanggaran batas wilayah
@@ -210,7 +211,7 @@ JOIN pelanggan p     ON ks.id_pelanggan = p.id_pelanggan
 -- kendaraan: kendaraan yang dipakai
 JOIN kendaraan k     ON ks.id_kendaraan = k.id_kendaraan
 LEFT JOIN konfigurasi_geofence kg ON ks.id_sewa = kg.id_sewa
-WHERE ks.status_sewa IN ('Aktif', 'Terlambat', 'Macet-Hukum')
+WHERE ks.status_sewa IN ('aktif', 'terlambat', 'proses hukum')
 GROUP BY p.nik, nama_pelanggan, p.no_telp, k.plat_nomor,
          ks.id_sewa, ks.status_sewa, kg.radius_km
 HAVING COUNT(pg.id_pelanggaran) >= 2
@@ -282,7 +283,7 @@ JOIN pelanggan p     ON ks.id_pelanggan = p.id_pelanggan
 -- kendaraan: unit kendaraan yang dipakai
 JOIN kendaraan k     ON ks.id_kendaraan = k.id_kendaraan
 LEFT JOIN konfigurasi_geofence kg ON ks.id_sewa = kg.id_sewa
-WHERE ks.status_sewa IN ('Aktif', 'Terlambat', 'Macet-Hukum')
+WHERE ks.status_sewa IN ('aktif', 'terlambat', 'proses hukum')
 ORDER BY rp.total_pelanggaran DESC
 LIMIT 20;
 
@@ -305,13 +306,13 @@ SELECT
     k.plat_nomor,
     k.status_kendaraan,
     -- daftar_hitam: detail pelanggaran yang dilaporkan
-    dh.nama_lengkap    AS nama_di_blacklist,
+    dh.nama_lengkap      AS nama_di_blacklist,
     dh.jenis_pelanggaran,
     dh.tanggal_kejadian,
     dh.status_verifikasi,
     -- komunitas_rental: rental mana yang melaporkan NIK ini
-    kr.nama_rental     AS rental_pelapor,
-    kr.kota            AS kota_rental_pelapor
+    kr.nama_rental       AS rental_pelapor,
+    kr.kota              AS kota_rental_pelapor
 -- pelanggan: sumber NIK penyewa yang sedang aktif
 FROM pelanggan p
 -- kontrak_sewa: filter sewa yang masih berjalan
@@ -320,8 +321,8 @@ JOIN kontrak_sewa ks  ON p.id_pelanggan = ks.id_pelanggan
 JOIN kendaraan k      ON ks.id_kendaraan = k.id_kendaraan
 JOIN daftar_hitam dh  ON p.nik = dh.nik
 JOIN komunitas_rental kr ON dh.id_rental_pelapor = kr.id_rental
-WHERE ks.status_sewa IN ('Aktif', 'Terlambat', 'Dipesan')
-  AND dh.status_verifikasi = 'Terverifikasi'
+WHERE ks.status_sewa IN ('aktif', 'terlambat', 'dipesan')
+  AND dh.status_verifikasi = 'terverifikasi'
 ORDER BY dh.tanggal_kejadian DESC
 LIMIT 20;
 
@@ -351,7 +352,7 @@ WITH blacklist_aktif AS (
     SELECT nik, nama_lengkap, jenis_pelanggaran,
            tanggal_kejadian, id_rental_pelapor
     FROM daftar_hitam
-    WHERE status_verifikasi = 'Terverifikasi'
+    WHERE status_verifikasi = 'terverifikasi'
 )
 SELECT
     p.nik,
@@ -373,6 +374,6 @@ JOIN kendaraan k       ON ks.id_kendaraan = k.id_kendaraan
 -- JOIN ke CTE yang sudah terfilter (lebih ringan)
 JOIN blacklist_aktif bl ON p.nik = bl.nik
 JOIN komunitas_rental kr ON bl.id_rental_pelapor = kr.id_rental
-WHERE ks.status_sewa IN ('Aktif', 'Terlambat', 'Dipesan')
+WHERE ks.status_sewa IN ('aktif', 'terlambat', 'dipesan')
 ORDER BY bl.tanggal_kejadian DESC
 LIMIT 20;
