@@ -335,7 +335,7 @@ def insert_kontrak():
                 'Selesai',
                 'Dibatalkan',
                 'Terlambat',
-                'Macet-Hukum'
+                'Proses Hukum'
             ],
             weights=[10,20,55,5,8,2]
         )[0]
