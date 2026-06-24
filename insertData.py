@@ -495,7 +495,7 @@ def insert_geofence():
         radius_km,
         status_aktif
     )
-    VALUES (%s,%s,%s,%s,%s,%s)
+    VALUES (%s,%s,%s,%s,%s)
     """
     batch = []
     for id_sewa in range(1, JUMLAH_KONTRAK + 1):
